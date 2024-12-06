@@ -1,306 +1,260 @@
 import sys
-from PyQt6.QtWidgets import *
-from PyQt6.QtCore import Qt, QRectF
-from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QAction
+from PyQt6.QtWidgets import QApplication, QMainWindow, QDockWidget
+from PyQt6.QtCore import Qt
+import logging
+import traceback
 import cv2
 import numpy as np
-import io
-import logging
 
-class ImageCropWidget(QLabel):
-    def __init__(self):
-        super().__init__()
-        self.setMouseTracking(True)
-        self.crop_rect = None
-        self.dragging = False
-        self.start_pos = None
+from styles import DarkTheme
+from widgets import ImageCropWidget
+from core.state_manager import StateManager
+from core.image_processor import ImageProcessor
+from core.stencil_processors import StencilProcessor
+from components.tools_panel import StencilTools
+from components.actions_panel import ActionsPanel
+from components.menu_bar import MenuBar
+from crop_window import CropWindow
 
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.start_pos = event.pos()
-            self.crop_rect = QRectF(self.start_pos, self.start_pos)
-            self.dragging = True
+def exception_hook(exctype, value, tb):
+    logging.error(''.join(traceback.format_exception(exctype, value, tb)))
+    sys.__excepthook__(exctype, value, tb)
 
-    def mouseMoveEvent(self, event):
-        if self.dragging:
-            self.crop_rect.setBottomRight(event.pos())
-            self.update()
+sys.excepthook = exception_hook
 
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.dragging = False
-
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        if self.crop_rect:
-            painter = QPainter(self)
-            painter.setPen(QPen(QColor(255, 255, 255), 2))
-            painter.drawRect(self.crop_rect)
-
-class ConsoleWidget(QWidget):
-    def __init__(self):
-        super().__init__()
-        layout = QVBoxLayout()
-        self.console = QTextEdit()
-        self.console.setReadOnly(True)
-        layout.addWidget(self.console)
-        self.setLayout(layout)
+class DockPanel(QDockWidget):
+    def __init__(self, title, parent=None):
+        super().__init__(title, parent)
+        self.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable | 
+                        QDockWidget.DockWidgetFeature.DockWidgetFloatable |
+                        QDockWidget.DockWidgetFeature.DockWidgetClosable)
+        self.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
         
-        # Logger setup
-        self.log_handler = QTextEditLogger(self.console)
-        logging.getLogger().addHandler(self.log_handler)
-        logging.getLogger().setLevel(logging.INFO)
-
-class QTextEditLogger(logging.Handler):
-    def __init__(self, widget):
-        super().__init__()
-        self.widget = widget
-        self.widget.setStyleSheet("background-color: #2b2b2b; color: #ffffff;")
-
-    def emit(self, record):
-        msg = self.format(record)
-        self.widget.append(msg)
-
 class StencilCreator(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.initUI()
+        self.state = StateManager()
+        self.init_ui()
         
-    def initUI(self):
+    def init_ui(self):
         self.setWindowTitle("Stencil Oluşturucu")
-        self.setMinimumSize(1000, 800)
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #1e1e1e;
-                color: #ffffff;
-            }
-            QLabel {
-                color: #ffffff;
-            }
-            QPushButton {
-                background-color: #2d2d2d;
-                color: #ffffff;
-                border: 1px solid #3d3d3d;
-                padding: 5px;
-                min-width: 80px;
-            }
-            QPushButton:hover {
-                background-color: #3d3d3d;
-            }
-            QSlider {
-                background-color: #2d2d2d;
-            }
-            QMenuBar {
-                background-color: #2d2d2d;
-                color: #ffffff;
-            }
-            QMenuBar::item:selected {
-                background-color: #3d3d3d;
-            }
-            QMenu {
-                background-color: #2d2d2d;
-                color: #ffffff;
-            }
-            QMenu::item:selected {
-                background-color: #3d3d3d;
-            }
-        """)
+        self.setMinimumSize(1200, 800)
+        self.setStyleSheet(DarkTheme.MAIN_STYLE)
+        
+        # Merkez widget
+        self.image_display = ImageCropWidget()
+        self.setCentralWidget(self.image_display)
         
         # Menü bar
-        self.create_menu_bar()
+        self.menu_bar = MenuBar(self)
+        self.setMenuBar(self.menu_bar)
+        self.setup_menu_connections()
         
-        # Ana widget
-        main_widget = QWidget()
-        self.setCentralWidget(main_widget)
-        layout = QHBoxLayout(main_widget)
+        # Paneller
+        self.setup_panels()
         
-        # Sol panel - Araçlar
-        tools_panel = QWidget()
-        tools_layout = QVBoxLayout(tools_panel)
-        tools_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        
-        # Stencil ayarları
-        self.threshold1 = QSlider(Qt.Orientation.Horizontal)
-        self.threshold1.setRange(0, 255)
-        self.threshold1.setValue(50)
-        self.threshold1.valueChanged.connect(self.update_stencil)
-        
-        self.threshold2 = QSlider(Qt.Orientation.Horizontal)
-        self.threshold2.setRange(0, 255)
-        self.threshold2.setValue(150)
-        self.threshold2.valueChanged.connect(self.update_stencil)
-        
-        self.blur = QSlider(Qt.Orientation.Horizontal)
-        self.blur.setRange(1, 21)
-        self.blur.setValue(5)
-        self.blur.valueChanged.connect(lambda x: self.update_stencil() if x % 2 == 1 else None)
-        
-        tools_layout.addWidget(QLabel("Kenar Algılama - Alt"))
-        tools_layout.addWidget(self.threshold1)
-        tools_layout.addWidget(QLabel("Kenar Algılama - Üst"))
-        tools_layout.addWidget(self.threshold2)
-        tools_layout.addWidget(QLabel("Bulanıklık"))
-        tools_layout.addWidget(self.blur)
-        
-        layout.addWidget(tools_panel)
-        
-        # Orta panel - Görüntü
-        center_panel = QWidget()
-        center_layout = QVBoxLayout(center_panel)
-        
-        self.image_label = ImageCropWidget()
-        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_label.setMinimumSize(600, 500)
-        self.image_label.setStyleSheet("border: 1px solid #3d3d3d;")
-        center_layout.addWidget(self.image_label)
-        
-        button_layout = QHBoxLayout()
-        
-        self.load_button = QPushButton("Resim Yükle")
-        self.load_button.clicked.connect(self.load_image)
-        button_layout.addWidget(self.load_button)
-        
-        self.crop_button = QPushButton("Kırp")
-        self.crop_button.clicked.connect(self.crop_image)
-        button_layout.addWidget(self.crop_button)
-        
-        self.convert_button = QPushButton("Stencil'e Dönüştür")
-        self.convert_button.clicked.connect(self.convert_to_stencil)
-        button_layout.addWidget(self.convert_button)
-        
-        self.save_button = QPushButton("Kaydet")
-        self.save_button.clicked.connect(self.save_image)
-        button_layout.addWidget(self.save_button)
-        
-        center_layout.addLayout(button_layout)
-        layout.addWidget(center_panel)
-        
-        # Console
-        self.console_widget = ConsoleWidget()
-        self.console_widget.hide()
-        layout.addWidget(self.console_widget)
-        
-        self.original_image = None
-        self.processed_image = None
+        # Panel görünürlük durumlarını menüye ekle
+        self.setup_view_toggles()
         
         logging.info("Program başlatıldı")
-
-    def create_menu_bar(self):
-        menubar = self.menuBar()
         
-        # File menüsü
-        file_menu = menubar.addMenu('Dosya')
+    def setup_panels(self):
+        # Araçlar paneli
+        self.tools_panel = StencilTools()
+        tools_dock = DockPanel("Stencil Ayarları")
+        tools_dock.setWidget(self.tools_panel)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, tools_dock)
+        self.tools_panel.settings_changed.connect(self.on_settings_changed)
         
-        open_action = QAction('Aç', self)
-        open_action.triggered.connect(self.load_image)
-        file_menu.addAction(open_action)
+        # İşlemler paneli
+        self.actions_panel = ActionsPanel()
+        actions_dock = DockPanel("İşlemler")
+        actions_dock.setWidget(self.actions_panel)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, actions_dock)
+        self.setup_action_connections()
         
-        save_action = QAction('Kaydet', self)
-        save_action.triggered.connect(self.save_image)
-        file_menu.addAction(save_action)
+        # Panelleri sakla
+        self.dock_panels = {
+            "Stencil Ayarları": tools_dock,
+            "İşlemler": actions_dock
+        }
         
-        # View menüsü
-        view_menu = menubar.addMenu('Görünüm')
+    def setup_menu_connections(self):
+        self.menu_bar.load_requested.connect(self.load_image)
+        self.menu_bar.save_requested.connect(self.save_image)
+        self.menu_bar.undo_requested.connect(self.undo)
+        self.menu_bar.redo_requested.connect(self.redo)
         
-        console_action = QAction('Konsol', self, checkable=True)
-        console_action.triggered.connect(self.toggle_console)
-        view_menu.addAction(console_action)
-
-    def toggle_console(self, state):
-        self.console_widget.setVisible(state)
-
+    def setup_action_connections(self):
+        self.actions_panel.load_requested.connect(self.load_image)
+        self.actions_panel.crop_requested.connect(self.crop_image)
+        self.actions_panel.convert_requested.connect(self.convert_to_stencil)
+        self.actions_panel.undo_requested.connect(self.undo)
+        self.actions_panel.redo_requested.connect(self.redo)
+        self.actions_panel.save_requested.connect(self.save_image)
+        
+    def setup_view_toggles(self):
+        for name, panel in self.dock_panels.items():
+            self.menu_bar.add_view_toggle(name, panel.toggleViewAction().trigger)
+            
+    def on_settings_changed(self, stencil_type, settings):
+        self.state.set_stencil_type(stencil_type)
+        for key, value in settings.items():
+            self.state.update_setting(key, value)
+        self.update_stencil()
+        
     def load_image(self):
-        try:
-            file_name, _ = QFileDialog.getOpenFileName(self, "Resim Seç", "", "Images (*.png *.jpg *.jpeg)")
-            if file_name:
-                with open(file_name, 'rb') as f:
-                    file_bytes = np.asarray(bytearray(f.read()), dtype=np.uint8)
-                    self.original_image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-                
-                if self.original_image is not None:
-                    self.display_image(self.original_image)
-                    logging.info(f"Resim yüklendi: {file_name}")
-                else:
-                    logging.error("Resim yüklenemedi!")
-        except Exception as e:
-            logging.error(f"Resim yükleme hatası: {str(e)}")
-
+        image = self.show_file_dialog("open")
+        if image is not None:
+            self.state.set_original_image(image)
+            self.update_display(image)
+            self.actions_panel.update_image_dependent_buttons(True)
+            
+    def save_image(self):
+        if self.state.state.processed_image is not None:
+            self.show_file_dialog("save", self.state.state.processed_image)
+            
     def crop_image(self):
-        if self.original_image is None or self.image_label.crop_rect is None:
-            return
-            
-        rect = self.image_label.crop_rect
-        pixmap = self.image_label.pixmap()
-        
-        # Koordinatları orijinal görüntü boyutuna ölçekle
-        scale_x = self.original_image.shape[1] / pixmap.width()
-        scale_y = self.original_image.shape[0] / pixmap.height()
-        
-        x = int(rect.x() * scale_x)
-        y = int(rect.y() * scale_y)
-        w = int(rect.width() * scale_x)
-        h = int(rect.height() * scale_y)
-        
-        self.original_image = self.original_image[y:y+h, x:x+w]
-        self.display_image(self.original_image)
-        self.image_label.crop_rect = None
-        logging.info("Resim kırpıldı")
+        print("Kırpma başladı")  # Debug
+        try:
+            if not hasattr(self, 'state') or self.state.state.original_image is None:
+                print("Orijinal görüntü yok")  # Debug
+                return
 
+            print("CropWindow oluşturuluyor")  # Debug
+            dialog = CropWindow(self)
+            h, w = self.state.state.original_image.shape[:2]
+            print(f"Görüntü boyutu: {w}x{h}")  # Debug
+
+            # RGB'ye dönüştür
+            rgb_image = cv2.cvtColor(self.state.state.original_image, cv2.COLOR_BGR2RGB)
+            print("Görüntü RGB'ye dönüştürüldü")  # Debug
+            
+            dialog.set_image(rgb_image)
+            print("Görüntü pencereye yüklendi")  # Debug
+            
+            if dialog.exec() == dialog.DialogCode.Accepted:
+                print("Kırpma onaylandı")  # Debug
+                rect = dialog.get_crop_rect()
+                if rect:
+                    x, y = int(rect.x()), int(rect.y())
+                    w, h = int(rect.width()), int(rect.height())
+                    cropped = self.state.state.original_image[y:y+h, x:x+w]
+                    self.state.set_original_image(cropped)
+                    self.update_display(cropped)
+                    print(f"Kırpma tamamlandı: {w}x{h}")  # Debug
+
+        except Exception as e:
+            print(f"Kırpma hatası: {str(e)}")  # Debug
+            logging.error(f"Kırpma hatası: {str(e)}")
+            traceback.print_exc()
+            
     def convert_to_stencil(self):
-        if self.original_image is None:
+        print("\n--- STENCIL DÖNÜŞTÜRME BAŞLADI ---")  # Debug
+        if self.state.state.original_image is None:
+            print("HATA: Orijinal görüntü yok")  # Debug
             return
             
-        gray = cv2.cvtColor(self.original_image, cv2.COLOR_BGR2GRAY)
-        blur_value = self.blur.value() if self.blur.value() % 2 == 1 else self.blur.value() + 1
-        blurred = cv2.GaussianBlur(gray, (blur_value, blur_value), 0)
-        edges = cv2.Canny(blurred, self.threshold1.value(), self.threshold2.value())
-        kernel = np.ones((2,2), np.uint8)
-        edges = cv2.dilate(edges, kernel, iterations=1)
-        self.processed_image = cv2.bitwise_not(edges)
-        self.display_image(self.processed_image)
-        logging.info("Stencil oluşturuldu")
+        stencil_type = self.state.state.stencil_type
+        settings = self.state.get_current_settings()
+        
+        print(f"İşlem tipi: {stencil_type}")  # Debug
+        print(f"Ayarlar: {settings}")  # Debug
+        print(f"Orijinal görüntü boyutu: {self.state.state.original_image.shape}")  # Debug
+        
+        result = None
+        
+        if stencil_type == "Temel":
+            print("Temel stencil işlemi başlatılıyor...")  # Debug
+            result = StencilProcessor.basic_stencil(
+                self.state.state.original_image,
+                settings
+            )
+            print(f"Temel stencil sonucu: {'Başarılı' if result is not None else 'Başarısız'}")  # Debug
+            if result is None:
+                print("HATA: Temel stencil işlemi başarısız oldu")  # Debug
+            else:
+                print(f"Sonuç görüntü boyutu: {result.shape}")  # Debug
+
+        elif stencil_type == "Adaptif":
+            print("Adaptif stencil işlemi başlatılıyor...")  # Debug
+            result = StencilProcessor.adaptive_stencil(
+                self.state.state.original_image,
+                settings
+            )
+            print(f"Adaptif stencil sonucu: {'Başarılı' if result is not None else 'Başarısız'}")  # Debug
+            if result is None:
+                print("HATA: Adaptif stencil işlemi başarısız oldu")  # Debug
+            else:
+                print(f"Sonuç görüntü boyutu: {result.shape}")  # Debug
+
+        else:  # Karakalem
+            result = StencilProcessor.sketch_stencil(
+                self.state.state.original_image,
+                settings
+            )
+            
+        print(f"İşlem sonucu: {'Başarılı' if result is not None else 'Başarısız'}")  # Debug
+            
+        if result is not None:
+            self.state.set_processed_image(result)
+            self.update_display(result)
+            print("Görüntü güncellendi")  # Debug
+            
+        print("--- STENCIL DÖNÜŞTÜRME TAMAMLANDI ---\n")  # Debug
 
     def update_stencil(self):
-        if self.original_image is not None and hasattr(self, 'processed_image'):
+        if self.state.state.original_image is not None:
             self.convert_to_stencil()
-
-    def save_image(self):
-        if self.processed_image is None:
-            return
-
+            
+    def undo(self):
+        result = self.state.undo()
+        if result is not None:
+            self.update_display(result)
+        self.update_undo_redo_state()
+            
+    def redo(self):
+        result = self.state.redo()
+        if result is not None:
+            self.update_display(result)
+        self.update_undo_redo_state()
+            
+    def update_display(self, image):
+        self.image_display.display_image(image)
+        
+    def update_undo_redo_state(self):
+        can_undo = self.state.can_undo()
+        can_redo = self.state.can_redo()
+        self.actions_panel.update_undo_redo_state(can_undo, can_redo)
+        self.menu_bar.update_undo_redo_state(can_undo, can_redo)
+        
+    def show_file_dialog(self, dialog_type, image=None):
+        from PyQt6.QtWidgets import QFileDialog
+        import cv2
+        import numpy as np
+        
         try:
-            file_name, _ = QFileDialog.getSaveFileName(self, "Stencil'i Kaydet", "", "Images (*.png)")
-            if file_name:
-                _, buf = cv2.imencode('.png', self.processed_image)
-                buf.tofile(file_name)
-                logging.info(f"Stencil kaydedildi: {file_name}")
+            if dialog_type == "open":
+                file_name, _ = QFileDialog.getOpenFileName(
+                    self, "Resim Seç", "", "Images (*.png *.jpg *.jpeg)"
+                )
+                if file_name:
+                    with open(file_name, 'rb') as f:
+                        file_bytes = np.asarray(bytearray(f.read()), dtype=np.uint8)
+                        return cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+                        
+            elif dialog_type == "save" and image is not None:
+                file_name, _ = QFileDialog.getSaveFileName(
+                    self, "Stencil'i Kaydet", "", "Images (*.png)"
+                )
+                if file_name:
+                    _, buf = cv2.imencode('.png', image)
+                    buf.tofile(file_name)
+                    
         except Exception as e:
-            logging.error(f"Kaydetme hatası: {str(e)}")
-
-    def display_image(self, image):
-        try:
-            if len(image.shape) == 3:
-                image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            logging.error(f"Dosya işlemi hatası: {str(e)}")
             
-            h, w = image.shape[:2]
-            
-            # En-boy oranını koru
-            label_w = self.image_label.width()
-            label_h = self.image_label.height()
-            
-            scale = min(label_w/w, label_h/h)
-            new_w = int(w * scale)
-            new_h = int(h * scale)
-                
-            format = QImage.Format.Format_Grayscale8 if len(image.shape) == 2 else QImage.Format.Format_RGB888
-            qt_image = QImage(image.data, w, h, image.strides[0], format)
-            
-            pixmap = QPixmap.fromImage(qt_image)
-            scaled_pixmap = pixmap.scaled(new_w, new_h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            self.image_label.setPixmap(scaled_pixmap)
-            
-        except Exception as e:
-            logging.error(f"Görüntü gösterme hatası: {str(e)}")
+        return None
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
