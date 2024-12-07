@@ -5,6 +5,8 @@ import traceback
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List
 from datetime import datetime
+import os
+import urllib.request
 
 @dataclass
 class StencilState:
@@ -14,6 +16,7 @@ class StencilState:
     stencil_type: str = "Temel"
     settings: Dict[str, Dict[str, Any]] = None
     last_modified: datetime = field(default_factory=datetime.now)
+    model_downloaded: bool = False
 
     def __post_init__(self):
         if self.settings is None:
@@ -34,19 +37,57 @@ class StencilState:
                     "darkness": 50.0,
                     "contrast": 50.0,
                     "line_thickness": 2.0
+                },
+                "Derin Stencil": {
+                    "threshold": 50.0,
+                    "line_thickness": 2.0,
+                    "denoise": True
+                },
+                "Sanatsal Stencil": {
+                    "detail_level": 50.0,
+                    "contrast": 50.0,
+                    "line_thickness": 2.0
                 }
             }
             logging.info("Varsayılan ayarlar yüklendi")
+            print("Varsayılan ayarlar:", self.settings)  # Debug
 
 class StateManager:
     """Program durumunu yöneten sınıf"""
+    MODEL_PATH = "models/hed_model.caffemodel"
+    PROTO_PATH = "models/deploy.prototxt"
+    MODEL_URL = "https://raw.githubusercontent.com/opencv/opencv_extra/master/testdata/dnn/hed_pretrained_bsds.caffemodel"
+    PROTO_URL = "https://raw.githubusercontent.com/opencv/opencv_3rdparty/master/hed/deploy.prototxt"
+
     def __init__(self):
         self.state = StencilState()
         self.history: List[np.ndarray] = []
         self.history_position: int = -1
         self.max_history: int = 10
+        self.ensure_model_exists()
         logging.info("StateManager başlatıldı")
-        print("Başlangıç ayarları:", self.state.settings)  # Debug
+
+    def ensure_model_exists(self):
+        """Model dosyalarının varlığını kontrol et ve indir"""
+        try:
+            if not os.path.exists('models'):
+                os.makedirs('models')
+                logging.info("Models klasörü oluşturuldu")
+
+            if not os.path.exists(self.MODEL_PATH):
+                logging.info("HED model indiriliyor...")
+                urllib.request.urlretrieve(self.MODEL_URL, self.MODEL_PATH)
+                logging.info("HED model indirildi")
+
+            if not os.path.exists(self.PROTO_PATH):
+                logging.info("Proto dosyası indiriliyor...")
+                urllib.request.urlretrieve(self.PROTO_URL, self.PROTO_PATH)
+                logging.info("Proto dosyası indirildi")
+
+            self.state.model_downloaded = True
+        except Exception as e:
+            logging.error(f"Model indirme hatası: {str(e)}")
+            self.state.model_downloaded = False
 
     def set_original_image(self, image: np.ndarray) -> None:
         """Orijinal görüntüyü ayarla"""
@@ -92,6 +133,10 @@ class StateManager:
                 logging.error(f"Geçersiz stencil tipi: {stencil_type}")
                 print(f"Geçersiz stencil tipi: {stencil_type}")  # Debug
                 return
+                
+            if stencil_type in ["Derin Stencil", "Sanatsal Stencil"] and not self.state.model_downloaded:
+                logging.warning("Model henüz indirilmedi!")
+                self.ensure_model_exists()
 
             self.state.stencil_type = stencil_type
             self.state.last_modified = datetime.now()
@@ -119,7 +164,13 @@ class StateManager:
                 return
                 
             old_value = settings[setting_name]
-            settings[setting_name] = float(value)  # Değeri float'a çevir
+            
+            # Boolean değerler için özel kontrol
+            if isinstance(old_value, bool):
+                settings[setting_name] = bool(value)
+            else:
+                settings[setting_name] = float(value)  # Diğer değerler float
+                
             self.state.last_modified = datetime.now()
             
             logging.info(f"Ayar güncellendi: {setting_name} = {value} (eski: {old_value})")

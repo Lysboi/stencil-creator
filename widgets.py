@@ -3,7 +3,6 @@ from PyQt6.QtCore import Qt, QRectF
 from PyQt6.QtGui import QPainter, QPen, QColor, QImage, QPixmap
 import logging
 import cv2
-
 from utils import QTextEditLogger
 
 class ImageCropWidget(QLabel):
@@ -72,7 +71,13 @@ class StencilTypeSelector(QComboBox):
     """Stencil tipi seçim kutusu"""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.addItems(['Temel', 'Adaptif', 'Karakalem'])
+        self.addItems([
+            'Temel', 
+            'Adaptif', 
+            'Karakalem',
+            'Derin Stencil',  # Yeni eklenen
+            'Sanatsal Stencil'  # Yeni eklenen
+        ])
         self.setMaximumWidth(200)
         self.setStyleSheet("""
             QComboBox {
@@ -100,5 +105,8 @@ class StencilTypeSelector(QComboBox):
                 color: #ffffff;
                 selection-background-color: #3d3d3d;
                 border: none;
+            }
+            QComboBox:hover {
+                background-color: #3d3d3d;
             }
         """)

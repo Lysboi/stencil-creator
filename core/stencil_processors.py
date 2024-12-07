@@ -2,10 +2,45 @@ import cv2
 import numpy as np
 import logging
 import traceback
+from core.deep_processor import DeepProcessor
+from core.advanced_sketch_processor import AdvancedSketchProcessor
 
 class StencilProcessor:
     """Stencil işleme sınıfı"""
     
+    _deep_processor = None
+    _advanced_processor = AdvancedSketchProcessor()
+    
+    @classmethod
+    def get_deep_processor(cls):
+        if cls._deep_processor is None:
+            cls._deep_processor = DeepProcessor()
+        return cls._deep_processor
+    
+    @staticmethod
+    def deep_stencil(image: np.ndarray, settings: dict) -> np.ndarray:
+        """Derin öğrenme tabanlı stencil işlemi"""
+        try:
+            print("Derin stencil başladı:", settings)  # Debug
+            return StencilProcessor._advanced_processor.portrait_to_sketch(image, settings)
+        except Exception as e:
+            print(f"Derin stencil hatası: {str(e)}")  # Debug
+            logging.error(f"Derin stencil hatası: {str(e)}")
+            logging.debug(traceback.format_exc())
+            return None
+
+    @staticmethod
+    def artistic_stencil(image: np.ndarray, settings: dict) -> np.ndarray:
+        """Sanatsal stencil işlemi"""
+        try:
+            print("Sanatsal stencil başladı:", settings)  # Debug
+            return StencilProcessor._advanced_processor.artistic_sketch(image, settings)
+        except Exception as e:
+            print(f"Sanatsal stencil hatası: {str(e)}")  # Debug
+            logging.error(f"Sanatsal stencil hatası: {str(e)}")
+            logging.debug(traceback.format_exc())
+            return None
+
     @staticmethod
     def basic_stencil(image: np.ndarray, settings: dict) -> np.ndarray:
         """Temel stencil işlemi"""

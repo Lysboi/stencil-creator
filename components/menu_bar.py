@@ -12,6 +12,7 @@ class MenuBar(QMenuBar):
     redo_requested = pyqtSignal()
     batch_process_requested = pyqtSignal()
     preferences_requested = pyqtSignal()
+    download_models_requested = pyqtSignal()  # Yeni sinyal
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -93,6 +94,7 @@ class MenuBar(QMenuBar):
         menu = QMenu("Araçlar", self)
         
         actions = [
+            ("Modelleri İndir", None, self.download_models_requested),  # Yeni menü ögesi
             ("Toplu İşlem", None, self.batch_process_requested),
             ("Ayarlar", None, self.preferences_requested)
         ]

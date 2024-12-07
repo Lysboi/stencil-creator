@@ -1,4 +1,6 @@
-PyQt6==6.5.0
-numpy==1.24.3
-opencv-python==4.7.0.72
-pyinstaller==5.10.1
+opencv-python
+numpy
+PyQt6
+torch
+torchvision
+pyyaml
